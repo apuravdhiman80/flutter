@@ -1,0 +1,20 @@
+# Frontend
+web/node_modules/
+web/.next/
+web/out/
+web/.env.local
+web/.env.*.local
+
+# Python
+api/.venv/
+api/__pycache__/
+**/__pycache__/
+*.py[cod]
+
+# Model weights, environment files, and editor artifacts
+*.pt
+.env
+.env.*
+.superpowers/
+.DS_Store
+Thumbs.db
