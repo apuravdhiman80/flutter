@@ -10,13 +10,14 @@ Create a polished local web app that detects common objects in uploaded images a
 
 The home screen is a single “Vision Studio” workspace. It has a clear image upload area, webcam controls, a large preview with colored bounding boxes and labels, and a results panel listing detected objects, counts, and confidence scores. Users can adjust the confidence threshold and download the annotated image. The visual design uses a dark ink background, light work surfaces, and restrained teal accents, with responsive layout for smaller screens.
 
-Supported input is JPEG, PNG, or WebP up to 10 MB. The webcam can be started and stopped; while active, the browser samples frames at up to three frames per second and sends only one request at a time. The browser draws returned boxes over the source image or current camera frame. Detection boxes use normalized coordinates so they remain aligned as the preview resizes.
+Supported input is JPEG, PNG, or WebP up to 10 MB. Confidence ranges from 0.05 to 0.95, defaulting to 0.25. The webcam can be started and stopped; while active, the browser samples frames with a maximum dimension of 640 pixels at up to three frames per second and sends only one request at a time. The browser draws returned boxes over the source image or current camera frame. Detection boxes use normalized coordinates so they remain aligned as the preview resizes.
 
 ## Architecture and data flow
 
 - `web/` contains the Next.js App Router app, TypeScript components, styling, upload and webcam handling, canvas annotation, and results UI.
 - `api/` contains a Python FastAPI service. It loads the small pretrained Ultralytics YOLO26n model once at startup and exposes `GET /api/health` and `POST /api/detect`.
-- `POST /api/detect` accepts one image and a confidence threshold, then returns the image dimensions and detections with class name, confidence, and normalized `x`, `y`, `width`, and `height` values.
+- `GET /api/health` returns readiness and the model name, or HTTP 503 while the model is loading.
+- `POST /api/detect` accepts multipart `file` and `confidence` fields, then returns `{image: {width, height}, detections: [{className, confidence, box: {x, y, width, height}}]}`. Coordinates are normalized from 0 to 1 relative to the original image.
 - The browser sends images only to the configured local API. The service does not persist uploaded images or webcam frames.
 - The model detects the common classes it was pretrained on. Custom class training, user accounts, saved history, and video-file processing are outside this first version.
 
