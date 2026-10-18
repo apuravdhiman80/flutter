@@ -21,4 +21,9 @@ export type DetectorHealth = {
   status: "ready" | "loading" | "error" | "offline";
   model?: string;
   message?: string;
+  worldStatus?: "loading" | "ready" | "error";
+  worldMessage?: string;
+  googleConfigured?: boolean;
 };
+
+export type DetectionProvider = "local" | "world" | "google";

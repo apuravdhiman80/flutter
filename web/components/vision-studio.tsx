@@ -25,12 +25,13 @@ import {
   Zap,
 } from "lucide-react";
 import { detectImage, getDetectorApiUrl, getDetectorHealth } from "@/lib/detector-api";
-import type { Detection, DetectionResponse, DetectorHealth } from "@/lib/types";
+import type { Detection, DetectionProvider, DetectionResponse, DetectorHealth } from "@/lib/types";
 import { DetectionPreview } from "@/components/detection-preview";
 
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 const ACCEPTED_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 const BOX_COLORS = ["#bef264", "#67e8f9", "#c4b5fd", "#fb923c", "#f9a8d4"];
+const DEFAULT_OBJECT_PROMPT = "person, car, bicycle, phone, laptop, cup, bottle, chair, dog, cat, plant, book";
 
 type InputMode = "image" | "camera";
 
@@ -38,8 +39,33 @@ function describeError(error: unknown): string {
   return error instanceof Error ? error.message : "Something went wrong while analyzing this frame.";
 }
 
+function isFlatGreenFrame(context: CanvasRenderingContext2D, width: number, height: number): boolean {
+  const pixels = context.getImageData(0, 0, width, height).data;
+  const channels: number[][] = [[], [], []];
+  let greenPixels = 0;
+  const columns = 8;
+  const rows = 6;
+
+  for (let row = 1; row <= rows; row += 1) {
+    for (let column = 1; column <= columns; column += 1) {
+      const x = Math.floor((column / (columns + 1)) * width);
+      const y = Math.floor((row / (rows + 1)) * height);
+      const offset = (y * width + x) * 4;
+      const [red, green, blue] = [pixels[offset], pixels[offset + 1], pixels[offset + 2]];
+      channels[0].push(red);
+      channels[1].push(green);
+      channels[2].push(blue);
+      if (green > 90 && red < 90 && blue < 90) greenPixels += 1;
+    }
+  }
+
+  return greenPixels >= columns * rows * 0.96 && channels.every((values) => Math.max(...values) - Math.min(...values) < 24);
+}
+
 export function VisionStudio() {
   const [inputMode, setInputMode] = useState<InputMode>("image");
+  const [provider, setProvider] = useState<DetectionProvider>("local");
+  const [objectPrompt, setObjectPrompt] = useState(DEFAULT_OBJECT_PROMPT);
   const [health, setHealth] = useState<DetectorHealth>({ status: "loading", message: "Checking the local detector…" });
   const [confidence, setConfidence] = useState(0.25);
   const [imageFile, setImageFile] = useState<File | null>(null);
@@ -48,6 +74,9 @@ export function VisionStudio() {
   const [imageName, setImageName] = useState("");
   const [detections, setDetections] = useState<Detection[]>([]);
   const [cameraActive, setCameraActive] = useState(false);
+  const [cameraStarting, setCameraStarting] = useState(false);
+  const [cameraDevices, setCameraDevices] = useState<MediaDeviceInfo[]>([]);
+  const [cameraDeviceId, setCameraDeviceId] = useState("");
   const [isDetecting, setIsDetecting] = useState(false);
   const [dragActive, setDragActive] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -57,6 +86,8 @@ export function VisionStudio() {
   const imageInputRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const cameraRequestVersionRef = useRef(0);
+  const flatGreenWarningRef = useRef(false);
   const requestPendingRef = useRef(false);
   const requestOwnerRef = useRef(0);
   const requestVersionRef = useRef(0);
@@ -82,9 +113,11 @@ export function VisionStudio() {
   }, [imageUrl]);
 
   const stopCamera = useCallback(() => {
+    cameraRequestVersionRef.current += 1;
     requestVersionRef.current += 1;
     abortRef.current?.abort();
     abortRef.current = null;
+    requestPendingRef.current = false;
     streamRef.current?.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
     if (videoRef.current) {
@@ -92,11 +125,13 @@ export function VisionStudio() {
       videoRef.current.srcObject = null;
     }
     setCameraActive(false);
+    setCameraStarting(false);
     setIsDetecting(false);
   }, []);
 
   useEffect(() => {
     return () => {
+      cameraRequestVersionRef.current += 1;
       streamRef.current?.getTracks().forEach((track) => track.stop());
       abortRef.current?.abort();
     };
@@ -105,8 +140,11 @@ export function VisionStudio() {
   useEffect(() => {
     if (!cameraActive || !videoRef.current || !streamRef.current) return;
     videoRef.current.srcObject = streamRef.current;
-    void videoRef.current.play().catch(() => setErrorMessage("The camera preview could not start. Check your browser camera settings."));
-  }, [cameraActive]);
+    void videoRef.current.play().catch(() => {
+      setErrorMessage("The camera opened but the preview could not play. Try selecting another camera or refresh the page.");
+      stopCamera();
+    });
+  }, [cameraActive, stopCamera]);
 
   const setDetectionResult = useCallback((result: DetectionResponse, elapsed: number) => {
     setDetections(result.detections);
@@ -115,7 +153,7 @@ export function VisionStudio() {
     setFrameCount((count) => count + 1);
   }, []);
 
-  const runStillDetection = useCallback(async (file: File, threshold: number) => {
+  const runStillDetection = useCallback(async (file: File, threshold: number, selectedProvider: DetectionProvider, prompt: string) => {
     if (requestPendingRef.current) {
       abortRef.current?.abort();
     }
@@ -129,7 +167,7 @@ export function VisionStudio() {
     const startedAt = performance.now();
 
     try {
-      const result = await detectImage(file, threshold, controller.signal);
+      const result = await detectImage(file, threshold, selectedProvider, prompt, controller.signal);
       if (version === requestVersionRef.current) setDetectionResult(result, performance.now() - startedAt);
     } catch (error) {
       if (version === requestVersionRef.current && !controller.signal.aborted) {
@@ -144,12 +182,24 @@ export function VisionStudio() {
     }
   }, [setDetectionResult]);
 
+  const providerReady = provider === "local"
+    ? health.status === "ready"
+    : provider === "world"
+      ? health.status === "ready" && health.worldStatus === "ready"
+      : Boolean(health.googleConfigured);
+
   useEffect(() => {
     if (!imageFile || cameraActive) return;
-    if (health.status !== "ready") return;
-    const timeout = window.setTimeout(() => void runStillDetection(imageFile, confidence), 250);
+    if (!providerReady) return;
+    const timeout = window.setTimeout(() => void runStillDetection(imageFile, confidence, provider, objectPrompt), 250);
     return () => window.clearTimeout(timeout);
-  }, [imageFile, confidence, cameraActive, health.status, health.message, runStillDetection]);
+  }, [imageFile, confidence, cameraActive, providerReady, provider, objectPrompt, runStillDetection]);
+
+  useEffect(() => {
+    requestVersionRef.current += 1;
+    abortRef.current?.abort();
+    setDetections([]);
+  }, [provider, objectPrompt]);
 
   useEffect(() => {
     if (!cameraActive) return;
@@ -163,7 +213,7 @@ export function VisionStudio() {
     const captureAndDetect = async () => {
       const video = videoRef.current;
       if (!active) return;
-      if (health.status !== "ready") {
+      if (!providerReady) {
         setIsDetecting(false);
         schedule(1000);
         return;
@@ -192,6 +242,17 @@ export function VisionStudio() {
       }
       context.drawImage(video, 0, 0, canvas.width, canvas.height);
 
+      if (isFlatGreenFrame(context, canvas.width, canvas.height)) {
+        setIsDetecting(false);
+        if (!flatGreenWarningRef.current) {
+          flatGreenWarningRef.current = true;
+          setErrorMessage("The selected camera is sending a solid green frame. Choose another camera below, or check the camera's privacy shutter and driver.");
+        }
+        schedule(1200);
+        return;
+      }
+      flatGreenWarningRef.current = false;
+
       const frame = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.82));
       if (!active || !frame) {
         schedule();
@@ -208,7 +269,7 @@ export function VisionStudio() {
       const startedAt = performance.now();
 
       try {
-        const result = await detectImage(frame, confidence, controller.signal);
+        const result = await detectImage(frame, confidence, provider, objectPrompt, controller.signal);
         if (active && version === requestVersionRef.current) {
           setDetectionResult(result, performance.now() - startedAt);
         }
@@ -228,10 +289,13 @@ export function VisionStudio() {
       active = false;
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [cameraActive, confidence, health.status, setDetectionResult]);
+  }, [cameraActive, confidence, provider, objectPrompt, providerReady, setDetectionResult]);
 
-  const startCamera = useCallback(async () => {
+  const startCamera = useCallback(async (requestedDeviceId?: string) => {
+    const requestVersion = ++cameraRequestVersionRef.current;
+    setCameraStarting(true);
     setErrorMessage(null);
+    flatGreenWarningRef.current = false;
     setInputMode("camera");
     setDetections([]);
     setFrameCount(0);
@@ -245,18 +309,35 @@ export function VisionStudio() {
 
     if (!navigator.mediaDevices?.getUserMedia) {
       setErrorMessage("This browser does not support camera access. Try a recent version of Chrome, Edge, Firefox, or Safari.");
+      setCameraStarting(false);
       return;
     }
 
     try {
+      const preferredFacingMode = window.matchMedia("(max-width: 760px)").matches ? "environment" : "user";
+      const videoConstraints: MediaTrackConstraints = requestedDeviceId || cameraDeviceId
+        ? { deviceId: { exact: requestedDeviceId || cameraDeviceId }, width: { ideal: 1280 }, height: { ideal: 720 } }
+        : { facingMode: { ideal: preferredFacingMode }, width: { ideal: 1280 }, height: { ideal: 720 } };
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 720 } },
+        video: videoConstraints,
         audio: false,
       });
+      if (requestVersion !== cameraRequestVersionRef.current) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
       streamRef.current?.getTracks().forEach((track) => track.stop());
       streamRef.current = stream;
+      const actualDeviceId = stream.getVideoTracks()[0]?.getSettings().deviceId ?? requestedDeviceId ?? cameraDeviceId;
+      if (actualDeviceId) setCameraDeviceId(actualDeviceId);
+      try {
+        setCameraDevices((await navigator.mediaDevices.enumerateDevices()).filter((device) => device.kind === "videoinput"));
+      } catch {
+        setCameraDevices([]);
+      }
       setCameraActive(true);
     } catch (error) {
+      if (requestVersion !== cameraRequestVersionRef.current) return;
       const name = error instanceof DOMException ? error.name : "";
       setErrorMessage(
         name === "NotAllowedError"
@@ -265,14 +346,16 @@ export function VisionStudio() {
             ? "No camera was found on this device."
             : "The camera could not be started. Check that it is not being used by another app.",
       );
+    } finally {
+      if (requestVersion === cameraRequestVersionRef.current) setCameraStarting(false);
     }
-  }, []);
+  }, [cameraDeviceId]);
 
   const chooseImageMode = useCallback(() => {
-    if (cameraActive) stopCamera();
+    stopCamera();
     setInputMode("image");
     setErrorMessage(null);
-  }, [cameraActive, stopCamera]);
+  }, [stopCamera]);
 
   const acceptImage = useCallback(async (file?: File) => {
     if (!file) return;
@@ -308,12 +391,18 @@ export function VisionStudio() {
   }, [stopCamera]);
 
   const toggleCamera = useCallback(() => {
-    if (cameraActive) {
+    if (cameraActive || cameraStarting) {
       stopCamera();
       return;
     }
     void startCamera();
-  }, [cameraActive, startCamera, stopCamera]);
+  }, [cameraActive, cameraStarting, startCamera, stopCamera]);
+
+  const switchCamera = useCallback((deviceId: string) => {
+    setCameraDeviceId(deviceId);
+    stopCamera();
+    void startCamera(deviceId);
+  }, [startCamera, stopCamera]);
 
   const groupedDetections = useMemo(() => {
     const groups = new Map<string, { count: number; confidence: number }>();
@@ -393,15 +482,23 @@ export function VisionStudio() {
     void acceptImage(event.dataTransfer.files[0]);
   };
 
-  const sourceAspect = cameraActive ? "16 / 9" : imageSize ? `${imageSize.width} / ${imageSize.height}` : "16 / 9";
-  const healthLabel = health.status === "ready"
-    ? "ENGINE READY"
-    : health.status === "loading"
-      ? "MODEL STARTING"
-      : health.status === "offline"
-        ? "API OFFLINE"
-        : "ENGINE ISSUE";
+  const sourceAspect = imageSize ? `${imageSize.width} / ${imageSize.height}` : "16 / 9";
   const apiReady = health.status === "ready";
+  const healthLabel = providerReady
+    ? provider === "google" ? "GOOGLE READY" : "ENGINE READY"
+    : provider === "world" && health.worldStatus === "loading"
+      ? "OPEN MODEL STARTING"
+      : health.status === "loading"
+        ? "MODEL STARTING"
+        : health.status === "offline"
+          ? "API OFFLINE"
+          : "ENGINE ISSUE";
+  const providerTitle = provider === "world" ? "YOLO-WORLD" : provider === "google" ? "GOOGLE VISION" : "YOLO26n";
+  const providerFootnote = provider === "world"
+    ? "TEXT-PROMPTED OBJECT SEARCH · LOCAL"
+    : provider === "google"
+      ? "OBJECT LOCALIZATION · GOOGLE CLOUD"
+      : "80 COMMON OBJECT CLASSES · LOCAL";
   const totalObjects = detections.length;
   const hasSource = Boolean(imageFile || cameraActive);
   const waitingTitle = health.status === "loading"
@@ -419,11 +516,11 @@ export function VisionStudio() {
         </a>
         <div className="topbar-center"><span className="topbar-separator" /> LOCAL WORKSPACE <span className="topbar-dot" /> DETECTOR / 01</div>
         <div className="topbar-actions">
-          <div className={`engine-badge ${apiReady ? "is-ready" : health.status === "offline" ? "is-offline" : "is-loading"}`}>
-            {apiReady ? <Check size={13} /> : health.status === "loading" ? <LoaderCircle className="spin" size={13} /> : <span className="status-dot" />}
+          <div className={`engine-badge ${providerReady ? "is-ready" : health.status === "offline" ? "is-offline" : "is-loading"}`}>
+            {providerReady ? <Check size={13} /> : health.status === "loading" || (provider === "world" && health.worldStatus === "loading") ? <LoaderCircle className="spin" size={13} /> : <span className="status-dot" />}
             <span>{healthLabel}</span>
           </div>
-          <button className="icon-button help-button" type="button" aria-label="About Vision Studio" title="Images stay on this device and local API">
+          <button className="icon-button help-button" type="button" aria-label="About Vision Studio" title={provider === "google" ? "Selected images and camera frames are sent to Google Cloud Vision." : "Local detector: images stay on this device and local API."}>
             <CircleHelp size={17} />
           </button>
           <button className="avatar-button" type="button" aria-label="Local session">V</button>
@@ -436,12 +533,12 @@ export function VisionStudio() {
           <h1>See what’s <span>in your frame.</span></h1>
           <p className="intro-copy">A little closer to the world around you. Drop in a photo or use your camera to find what’s there.</p>
         </div>
-        <div className="local-note"><ShieldCheck size={17} /><span><strong>Private by design</strong><small>Images stay on your device</small></span></div>
+        <div className={`local-note ${provider === "google" ? "cloud-note" : ""}`}><ShieldCheck size={17} /><span><strong>{provider === "google" ? "Cloud analysis" : "Private by design"}</strong><small>{provider === "google" ? "Frames are sent to Google" : "Images stay on your device"}</small></span></div>
       </section>
 
       <div className="workspace-toolbar">
         <div className="workspace-label"><span className="workspace-number">01</span><span>DETECTION STUDIO</span><ChevronDown size={13} /></div>
-        <div className="toolbar-center"><span className="toolbar-live-dot" /> SESSION READY <span className="toolbar-divider">/</span> {health.model?.toUpperCase() ?? "YOLO26N"}</div>
+        <div className="toolbar-center"><span className="toolbar-live-dot" /> {providerReady ? "SESSION READY" : "ENGINE STARTING"} <span className="toolbar-divider">/</span> {providerTitle}</div>
         <div className="toolbar-right"><span><Activity size={14} /> {frameCount.toString().padStart(2, "0")} {cameraActive ? "FRAMES" : "RUNS"}</span><span className="toolbar-divider">/</span><span>{latency === null ? "— MS" : `${Math.round(latency)} MS`}</span></div>
       </div>
 
@@ -452,7 +549,7 @@ export function VisionStudio() {
               <div className="panel-title"><span className="panel-icon"><ScanLine size={16} /></span><span><strong>Visual canvas</strong><small>Object detection preview</small></span></div>
               <div className="source-switcher" role="tablist" aria-label="Input source">
                 <button className={`source-tab ${inputMode === "image" ? "active" : ""}`} type="button" role="tab" aria-selected={inputMode === "image"} onClick={chooseImageMode}><FileImage size={14} /> Image</button>
-                <button className={`source-tab ${inputMode === "camera" ? "active" : ""}`} type="button" role="tab" aria-selected={inputMode === "camera"} onClick={() => { setInputMode("camera"); if (!cameraActive) void startCamera(); }}><Video size={14} /> Live camera</button>
+                <button className={`source-tab ${inputMode === "camera" ? "active" : ""}`} type="button" role="tab" aria-selected={inputMode === "camera"} onClick={() => { setInputMode("camera"); if (!cameraActive && !cameraStarting) void startCamera(); }}><Video size={14} /> Live camera</button>
               </div>
             </div>
 
@@ -488,15 +585,20 @@ export function VisionStudio() {
             </div>
 
             <div className="canvas-footer">
-              <div className="footer-meta"><span className={`source-pip ${cameraActive ? "live" : imageFile ? "loaded" : ""}`} />{cameraActive ? "CAMERA ACTIVE" : imageFile ? "SOURCE LOADED" : "AWAITING INPUT"}<span className="meta-divider" />{imageSize ? `${imageSize.width} × ${imageSize.height}` : "NO IMAGE"}</div>
+              <div className="footer-meta"><span className={`source-pip ${cameraActive ? "live" : imageFile ? "loaded" : ""}`} />{cameraStarting ? "CAMERA STARTING" : cameraActive ? "CAMERA ACTIVE" : imageFile ? "SOURCE LOADED" : "AWAITING INPUT"}<span className="meta-divider" />{imageSize ? `${imageSize.width} × ${imageSize.height}` : "NO IMAGE"}</div>
+              {cameraActive && cameraDevices.length > 1 && (
+                <label className="camera-picker"><span className="visually-hidden">Select camera</span><select value={cameraDeviceId} onChange={(event) => switchCamera(event.target.value)} aria-label="Select camera">
+                  {cameraDevices.map((device, index) => <option key={device.deviceId} value={device.deviceId}>{device.label || `Camera ${index + 1}`}</option>)}
+                </select></label>
+              )}
               <div className="canvas-actions">
-                {cameraActive ? (
+                {cameraActive || cameraStarting ? (
                   <button className="button button-secondary" onClick={stopCamera} type="button"><VideoOff size={15} /> Stop camera</button>
                 ) : (
                   <button className="button button-secondary" onClick={() => imageInputRef.current?.click()} type="button"><Upload size={15} /> Upload image</button>
                 )}
                 <button className="button button-primary" onClick={toggleCamera} type="button">
-                  {cameraActive ? <Check size={15} /> : <Camera size={15} />}{cameraActive ? "Live detection on" : "Use camera"}
+                  {cameraActive ? <Check size={15} /> : cameraStarting ? <LoaderCircle size={15} className="spin" /> : <Camera size={15} />}{cameraActive ? "Live detection on" : cameraStarting ? "Starting camera…" : "Use camera"}
                 </button>
               </div>
             </div>
