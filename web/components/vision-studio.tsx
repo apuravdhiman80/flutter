@@ -395,9 +395,10 @@ export function VisionStudio() {
               </>
             ) : (
               <div className="results-empty deep-empty">
-                <div className="results-empty-icon"><Aperture size={18} strokeWidth={1.5} /></div>
-                <strong>{isAnalyzing ? "Reading the full image…" : imageFile ? openaiReady ? "Ready to analyze" : "OpenAI setup needed" : "Your report will appear here"}</strong>
-                <p>{isAnalyzing ? "Looking for objects, scene context, readable text, and visual relationships." : imageFile ? openaiReady ? "The image is being sent once for a detailed report." : "Add an OpenAI API key to the Python API and save the file." : "Choose a photo to get a scene overview and detailed object descriptions."}</p>
+                <div className="results-empty-icon">{errorMessage && !isAnalyzing ? <Info size={18} strokeWidth={1.5} /> : <Aperture size={18} strokeWidth={1.5} />}</div>
+                <strong>{errorMessage && !isAnalyzing ? "Analysis could not finish" : isAnalyzing ? "Reading the full image…" : imageFile ? openaiReady ? "Ready to analyze" : "OpenAI setup needed" : "Your report will appear here"}</strong>
+                <p>{errorMessage && !isAnalyzing ? errorMessage : isAnalyzing ? "Looking for objects, scene context, readable text, and visual relationships." : imageFile ? openaiReady ? "The image is being sent once for a detailed report." : "Add an OpenAI API key to the Python API and save the file." : "Choose a photo to get a scene overview and detailed object descriptions."}</p>
+                {errorMessage && imageFile && openaiReady && !isAnalyzing && <button className="button button-primary" onClick={retryAnalysis} type="button"><Zap size={14} /> Retry analysis</button>}
               </div>
             )}
           </div>

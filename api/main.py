@@ -178,15 +178,40 @@ def _analyze_with_openai(
     except urllib.error.HTTPError as error:
         try:
             error_body = json.loads(error.read())
-            message = error_body.get("error", {}).get("message", "")
+            error_info = error_body.get("error", {})
+            if not isinstance(error_info, dict):
+                error_info = {}
+            message = str(error_info.get("message", "")).strip()
+            error_code = str(error_info.get("code") or error_info.get("type") or "").strip().lower()
+            error_type = str(error_info.get("type", "")).strip().lower()
         except (json.JSONDecodeError, OSError):
             message = ""
+            error_code = ""
+            error_type = ""
         if error.code in (401, 403):
             detail = "OpenAI rejected the API key. Check OPENAI_API_KEY in api/.env."
         elif error.code == 429:
-            detail = "OpenAI rate limit or API billing limit reached. Check your API project and try again."
+            quota_codes = {
+                "insufficient_quota",
+                "credit_balance_exhausted",
+                "organization_usage_limit_exceeded",
+                "organization_spend_limit_exceeded",
+                "project_spend_limit_exceeded",
+            }
+            if error_code in quota_codes or error_type == "insufficient_quota":
+                detail = (
+                    "OpenAI API quota or billing limit reached. Check API billing/credits and the usage or spend limit "
+                    "for the organization and project that owns this key. ChatGPT subscriptions do not include API usage."
+                )
+            elif "rate_limit" in error_code or "rate_limit" in error_type:
+                detail = (
+                    "OpenAI request or token rate limit reached. Wait a minute, then retry once. If it keeps happening, "
+                    "check the model's rate limits for this API project."
+                )
+            else:
+                detail = f"OpenAI returned HTTP 429 ({error_code or 'rate limit or quota'}). {message[:240]}".strip()
         else:
-            detail = f"OpenAI Vision returned HTTP {error.code}. {message[:220]}".strip()
+            detail = f"OpenAI Vision returned HTTP {error.code} ({error_code or 'request error'}). {message[:220]}".strip()
         raise HTTPException(status_code=502, detail=detail) from error
     except (urllib.error.URLError, TimeoutError) as error:
         raise HTTPException(status_code=502, detail="OpenAI Vision timed out or could not be reached. Try a smaller image or check your internet connection.") from error
