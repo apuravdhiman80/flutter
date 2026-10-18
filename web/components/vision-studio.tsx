@@ -93,6 +93,22 @@ export function VisionStudio() {
   const requestVersionRef = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
 
+  const changeProvider = useCallback((nextProvider: DetectionProvider) => {
+    requestVersionRef.current += 1;
+    abortRef.current?.abort();
+    setDetections([]);
+    setIsDetecting(false);
+    setProvider(nextProvider);
+  }, []);
+
+  const changeObjectPrompt = useCallback((nextPrompt: string) => {
+    requestVersionRef.current += 1;
+    abortRef.current?.abort();
+    setDetections([]);
+    setIsDetecting(false);
+    setObjectPrompt(nextPrompt);
+  }, []);
+
   useEffect(() => {
     let active = true;
     const refreshHealth = async () => {
@@ -191,15 +207,10 @@ export function VisionStudio() {
   useEffect(() => {
     if (!imageFile || cameraActive) return;
     if (!providerReady) return;
+    if (provider === "world" && !objectPrompt.trim()) return;
     const timeout = window.setTimeout(() => void runStillDetection(imageFile, confidence, provider, objectPrompt), 250);
     return () => window.clearTimeout(timeout);
   }, [imageFile, confidence, cameraActive, providerReady, provider, objectPrompt, runStillDetection]);
-
-  useEffect(() => {
-    requestVersionRef.current += 1;
-    abortRef.current?.abort();
-    setDetections([]);
-  }, [provider, objectPrompt]);
 
   useEffect(() => {
     if (!cameraActive) return;
@@ -216,6 +227,12 @@ export function VisionStudio() {
       if (!providerReady) {
         setIsDetecting(false);
         schedule(1000);
+        return;
+      }
+      if (provider === "world" && !objectPrompt.trim()) {
+        setIsDetecting(false);
+        setErrorMessage("Enter at least one object name to run open-vocabulary detection.");
+        schedule(700);
         return;
       }
       if (!video || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || requestPendingRef.current) {
@@ -328,7 +345,10 @@ export function VisionStudio() {
       }
       streamRef.current?.getTracks().forEach((track) => track.stop());
       streamRef.current = stream;
-      const actualDeviceId = stream.getVideoTracks()[0]?.getSettings().deviceId ?? requestedDeviceId ?? cameraDeviceId;
+      const activeTrack = stream.getVideoTracks()[0];
+      const trackSettings = activeTrack?.getSettings();
+      const actualDeviceId = trackSettings?.deviceId ?? requestedDeviceId ?? cameraDeviceId;
+      if (trackSettings?.width && trackSettings.height) setImageSize({ width: trackSettings.width, height: trackSettings.height });
       if (actualDeviceId) setCameraDeviceId(actualDeviceId);
       try {
         setCameraDevices((await navigator.mediaDevices.enumerateDevices()).filter((device) => device.kind === "videoinput"));
@@ -483,7 +503,6 @@ export function VisionStudio() {
   };
 
   const sourceAspect = imageSize ? `${imageSize.width} / ${imageSize.height}` : "16 / 9";
-  const apiReady = health.status === "ready";
   const healthLabel = providerReady
     ? provider === "google" ? "GOOGLE READY" : "ENGINE READY"
     : provider === "world" && health.worldStatus === "loading"
@@ -501,11 +520,15 @@ export function VisionStudio() {
       : "80 COMMON OBJECT CLASSES · LOCAL";
   const totalObjects = detections.length;
   const hasSource = Boolean(imageFile || cameraActive);
-  const waitingTitle = health.status === "loading"
-    ? "Model is warming up"
-    : health.status === "offline"
-      ? "Detector is offline"
-      : "Detector needs attention";
+  const waitingTitle = provider === "world" && health.worldStatus === "loading"
+    ? "Open model is warming up"
+    : provider === "google" && !health.googleConfigured
+      ? "Google Vision is not configured"
+      : health.status === "loading"
+        ? "Model is warming up"
+        : health.status === "offline"
+          ? "Detector is offline"
+          : "Detector needs attention";
 
   return (
     <main className="app-shell">
@@ -616,6 +639,25 @@ export function VisionStudio() {
                 <div className="panel-title"><span className="panel-icon"><Settings2 size={16} /></span><span><strong>Detection controls</strong><small>Adjust what gets surfaced</small></span></div>
                 <span className="control-count"><Zap size={12} /> LIVE</span>
               </div>
+              <div className="provider-control">
+                <span className="field-label">DETECTION ENGINE</span>
+                <div className="provider-switcher" role="group" aria-label="Detection engine">
+                  <button type="button" className={provider === "local" ? "selected" : ""} onClick={() => changeProvider("local")}>Fast · 80 classes</button>
+                  <button type="button" className={provider === "world" ? "selected" : ""} onClick={() => changeProvider("world")}>Open vocabulary</button>
+                  <button type="button" className={provider === "google" ? "selected" : ""} onClick={() => changeProvider("google")} disabled={!health.googleConfigured}>Google Vision</button>
+                </div>
+                {provider === "world" ? (
+                  <label className="prompt-field"><span className="field-label">OBJECTS TO FIND · COMMA SEPARATED</span><input value={objectPrompt} onChange={(event) => changeObjectPrompt(event.target.value)} maxLength={1000} placeholder="red backpack, coffee mug, headphones" aria-label="Objects to find" /><small>Name up to 30 objects. The local open-vocabulary model searches these concepts.</small></label>
+                ) : provider === "google" ? (
+                  <p className="provider-note">Image frames are sent to Google Cloud Vision for object localization.</p>
+                ) : health.googleConfigured ? (
+                  <p className="provider-note">Local mode keeps images on this device. Google Vision is also configured.</p>
+                ) : (
+                  <p className="provider-note">Google Cloud Vision is optional. Add its API key to <code>api/.env</code> to enable it.</p>
+                )}
+                {provider === "world" && health.worldStatus === "loading" && <p className="provider-note">The open-vocabulary model is warming up; it will become ready automatically.</p>}
+                {provider === "world" && health.worldStatus === "error" && <p className="provider-note is-error">{health.worldMessage ?? "Open-vocabulary model failed to load. Check the API terminal."}</p>}
+              </div>
               <div className="threshold-row">
                 <div><span className="field-label">CONFIDENCE THRESHOLD</span><p>Hide detections below this score.</p></div>
                 <div className="threshold-value">{Math.round(confidence * 100)}<small>%</small></div>
@@ -632,17 +674,17 @@ export function VisionStudio() {
                 style={{ "--range-progress": `${((confidence - 0.05) / 0.9) * 100}%` } as CSSProperties}
               />
               <div className="range-labels"><span>MORE OBJECTS</span><span>HIGHER CERTAINTY</span></div>
-              <div className="control-note"><Info size={14} /><span>Higher confidence reduces uncertain labels. It can also hide objects the model is less sure about.</span></div>
+              <div className="control-note"><Info size={14} /><span>{provider === "world" ? "Open-vocabulary search can find objects outside the standard 80 classes; name what you want to find." : provider === "google" ? "Google returns localized object boxes. Confidence filters less certain results." : "The fast local model recognizes 80 common classes. Lower confidence can reveal less certain objects."}</span></div>
             </div>
 
             <div className="panel model-panel">
               <div className="panel-heading compact-heading">
-                <div className="panel-title"><span className="panel-icon model-icon"><Sparkles size={16} /></span><span><strong>Detection engine</strong><small>Running locally on your device</small></span></div>
-                <span className="ready-chip">{apiReady ? "READY" : health.status === "loading" ? "LOADING" : "OFFLINE"}</span>
+                <div className="panel-title"><span className="panel-icon model-icon"><Sparkles size={16} /></span><span><strong>Detection engine</strong><small>{provider === "google" ? "Google Cloud Vision" : provider === "world" ? "Running locally · open vocabulary" : "Running locally on your device"}</small></span></div>
+                <span className="ready-chip">{providerReady ? "READY" : provider === "world" && health.worldStatus === "loading" ? "LOADING" : provider === "google" && !health.googleConfigured ? "SETUP" : "OFFLINE"}</span>
               </div>
-              <div className="model-name-row"><div><span className="model-kicker">PRETRAINED MODEL</span><strong>YOLO26<span>n</span></strong></div><span className="model-orbit"><Aperture size={25} strokeWidth={1.3} /></span></div>
-              <div className="model-specs"><span><Gauge size={13} /> Fast inference</span><span><ShieldCheck size={13} /> No image storage</span></div>
-              <div className="model-footnote">COMMON OBJECT CLASSES <span>·</span> CPU / GPU</div>
+              <div className="model-name-row"><div><span className="model-kicker">{provider === "google" ? "REMOTE API" : "PRETRAINED MODEL"}</span><strong className="engine-name">{providerTitle}</strong></div><span className="model-orbit"><Aperture size={25} strokeWidth={1.3} /></span></div>
+              <div className="model-specs"><span><Gauge size={13} /> {provider === "google" ? "Cloud inference" : "Local inference"}</span><span><ShieldCheck size={13} /> {provider === "google" ? "Key stays server-side" : "No image storage"}</span></div>
+              <div className="model-footnote">{providerFootnote.split(" · ")[0]} <span>·</span> {provider === "google" ? "EXTERNAL" : "CPU / GPU"}</div>
             </div>
           </div>
         </div>
@@ -666,8 +708,8 @@ export function VisionStudio() {
             )) : (
               <div className="results-empty">
                 <div className="results-empty-icon"><Aperture size={18} strokeWidth={1.5} /></div>
-                <strong>{isDetecting ? "Reading the frame…" : hasSource && !apiReady ? waitingTitle : hasSource ? "Nothing detected yet" : "Ready when you are"}</strong>
-                <p>{isDetecting ? "The model is looking for familiar objects." : hasSource && !apiReady ? health.message ?? "The local model will analyze your image when it is ready." : hasSource ? "Try another angle or lower the confidence threshold." : "Upload a photo or turn on your camera to see detections here."}</p>
+                <strong>{isDetecting ? "Reading the frame…" : hasSource && !providerReady ? waitingTitle : hasSource ? "Nothing detected yet" : "Ready when you are"}</strong>
+                <p>{isDetecting ? provider === "google" ? "Google Cloud Vision is analyzing this frame." : provider === "world" ? "The open-vocabulary model is searching your object prompts." : "The local model is looking for familiar objects." : hasSource && !providerReady ? provider === "world" ? health.worldMessage ?? "The open-vocabulary model will analyze your image when it is ready." : provider === "google" ? "Add a Google Cloud Vision API key in api/.env, then restart the API." : health.message ?? "The local model will analyze your image when it is ready." : hasSource ? provider === "world" ? "Try different object names or lower the confidence threshold." : "Try another angle or lower the confidence threshold." : "Upload a photo or turn on your camera to see detections here."}</p>
               </div>
             )}
           </div>
@@ -682,7 +724,7 @@ export function VisionStudio() {
 
       <footer className="app-footer">
         <div className="footer-brand"><span className="footer-mark"><Aperture size={14} /></span> SIGHTLINE <span className="footer-version">VISION STUDIO / BETA</span></div>
-        <div className="footer-status"><span className={`footer-status-dot ${apiReady ? "" : "is-muted"}`} />{apiReady ? `Connected to ${health.model ?? "YOLO26n"}` : health.message ?? "Waiting for the local detector"}<span className="footer-divider" />API <code>{new URL(getDetectorApiUrl()).host}</code></div>
+        <div className="footer-status"><span className={`footer-status-dot ${providerReady ? "" : "is-muted"}`} />{providerReady ? `Connected to ${providerTitle}` : provider === "world" ? health.worldMessage ?? "Open-vocabulary model starting" : provider === "google" ? "Google Vision needs an API key" : health.message ?? "Waiting for the local detector"}<span className="footer-divider" />API <code>{new URL(getDetectorApiUrl()).host}</code></div>
         <div className="footer-right">MADE FOR SEEING MORE <span>✳</span></div>
       </footer>
     </main>

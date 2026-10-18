@@ -15,6 +15,7 @@ api/__pycache__/
 *.pt
 .env
 .env.*
+!.env.example
 .superpowers/
 .DS_Store
 Thumbs.db
