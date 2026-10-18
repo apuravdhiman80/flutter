@@ -2,4 +2,3 @@ fastapi
 uvicorn[standard]
 pillow
 python-dotenv
-ultralytics

@@ -7,6 +7,15 @@ export type Detection = {
     width: number;
     height: number;
   };
+  description: string;
+  attributes: string[];
+};
+
+export type SceneAnalysis = {
+  overview: string;
+  setting: string;
+  visibleText: string[];
+  notableDetails: string[];
 };
 
 export type DetectionResponse = {
@@ -15,15 +24,12 @@ export type DetectionResponse = {
     height: number;
   };
   detections: Detection[];
+  analysis: SceneAnalysis;
 };
 
 export type DetectorHealth = {
   status: "ready" | "loading" | "error" | "offline";
   model?: string;
   message?: string;
-  worldStatus?: "loading" | "ready" | "error";
-  worldMessage?: string;
-  googleConfigured?: boolean;
+  openaiConfigured?: boolean;
 };
-
-export type DetectionProvider = "local" | "world" | "google";

@@ -1,4 +1,4 @@
-import type { DetectionProvider, DetectionResponse, DetectorHealth } from "@/lib/types";
+import type { DetectionResponse, DetectorHealth } from "@/lib/types";
 
 const API_URL = (process.env.NEXT_PUBLIC_DETECTOR_API_URL ?? "http://127.0.0.1:8000").replace(/\/$/, "");
 
@@ -10,60 +10,39 @@ async function readError(response: Response): Promise<string> {
   } catch {
     // Fall through to a readable status message when the API body is not JSON.
   }
-  return `The detector service returned ${response.status}.`;
-}
-
-async function readHealthError(response: Response): Promise<DetectorHealth> {
-  try {
-    const body = (await response.json()) as {
-      detail?: string | { status?: string; message?: string; worldStatus?: string; googleConfigured?: boolean };
-    };
-    if (body.detail && typeof body.detail === "object") {
-      const detail = body.detail;
-      return {
-        status: detail.status === "loading" ? "loading" : "error",
-        message: detail.message,
-        worldStatus: detail.worldStatus === "ready" || detail.worldStatus === "error" ? detail.worldStatus : "loading",
-        googleConfigured: detail.googleConfigured,
-      };
-    }
-    return { status: "error", message: typeof body.detail === "string" ? body.detail : `The detector service returned ${response.status}.` };
-  } catch {
-    return { status: "error", message: `The detector service returned ${response.status}.` };
-  }
+  return `The image analysis service returned ${response.status}.`;
 }
 
 export async function getDetectorHealth(): Promise<DetectorHealth> {
   try {
     const response = await fetch(`${API_URL}/api/health`, { cache: "no-store" });
     if (response.ok) return (await response.json()) as DetectorHealth;
-
-    return await readHealthError(response);
+    return { status: "error", message: `The image analysis service returned ${response.status}.` };
   } catch {
-    return { status: "offline", message: "Start the Python API to enable detections." };
+    return { status: "offline", message: "Start the Python API to enable image analysis." };
   }
 }
 
-export async function detectImage(
+export async function analyzeImage(
   file: Blob,
-  confidence: number,
-  provider: DetectionProvider,
   prompt: string,
   signal?: AbortSignal,
 ): Promise<DetectionResponse> {
-  const query = new URLSearchParams({ confidence: confidence.toFixed(2), provider });
-  if (provider === "world") query.set("prompt", prompt);
+  const query = new URLSearchParams();
+  if (prompt.trim()) query.set("prompt", prompt.trim());
+  const queryString = query.toString();
+  const suffix = queryString ? `?${queryString}` : "";
 
   let response: Response;
   try {
-    response = await fetch(`${API_URL}/api/detect?${query.toString()}`, {
+    response = await fetch(`${API_URL}/api/detect${suffix}`, {
       method: "POST",
       headers: { "Content-Type": file.type || "image/jpeg" },
       body: file,
       signal,
     });
   } catch {
-    throw new Error("Can’t reach the detector. Make sure the Python API is running.");
+    throw new Error("Can’t reach the image analysis service. Make sure the Python API is running.");
   }
 
   if (!response.ok) throw new Error(await readError(response));

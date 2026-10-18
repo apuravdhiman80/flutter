@@ -1,4 +1,3 @@
-import type { RefObject } from "react";
 import { Aperture, ScanLine, Upload } from "lucide-react";
 import type { Detection } from "@/lib/types";
 
@@ -8,8 +7,6 @@ type DetectionPreviewProps = {
   imageUrl: string | null;
   imageName: string;
   aspectRatio: string;
-  cameraActive: boolean;
-  videoRef: RefObject<HTMLVideoElement | null>;
   detections: Detection[];
   loading: boolean;
   onChooseImage: () => void;
@@ -19,20 +16,16 @@ export function DetectionPreview({
   imageUrl,
   imageName,
   aspectRatio,
-  cameraActive,
-  videoRef,
   detections,
   loading,
   onChooseImage,
 }: DetectionPreviewProps) {
-  const hasSource = cameraActive || Boolean(imageUrl);
+  const hasImage = Boolean(imageUrl);
 
   return (
     <div className="preview-stage">
       <div className="preview-frame" style={{ aspectRatio }}>
-        {cameraActive ? (
-          <video ref={videoRef} className="preview-media" autoPlay playsInline muted aria-label="Live camera preview" />
-        ) : imageUrl ? (
+        {imageUrl ? (
           // The selected local file is rendered from a temporary browser object URL.
           // eslint-disable-next-line @next/next/no-img-element
           <img src={imageUrl} className="preview-media" alt={imageName || "Selected image"} />
@@ -44,19 +37,19 @@ export function DetectionPreview({
             <span className="empty-crosshair crosshair-left" />
             <span className="empty-crosshair crosshair-right" />
             <div className="empty-copy">
-              <span className="eyebrow">YOUR CANVAS IS READY</span>
-              <h3>Drop a scene in.</h3>
-              <p>Choose an image or switch on your camera to start seeing what’s there.</p>
+              <span className="eyebrow">IMAGE ANALYSIS / OPENAI VISION</span>
+              <h3>Drop an image in.</h3>
+              <p>Get a detailed scene read, object descriptions, visible text, and approximate object boxes.</p>
               <button className="button button-soft" onClick={onChooseImage} type="button">
                 <Upload size={15} /> Choose an image
               </button>
             </div>
-            <div className="empty-coordinate coordinate-top">X 0640 <span>Y 0384</span></div>
-            <div className="empty-coordinate coordinate-bottom">SCOPE / 01 <span>READY</span></div>
+            <div className="empty-coordinate coordinate-top">ONE IMAGE <span>ONE REPORT</span></div>
+            <div className="empty-coordinate coordinate-bottom">JPG · PNG · WEBP <span>UP TO 10 MB</span></div>
           </div>
         )}
 
-        {hasSource && (
+        {hasImage && (
           <div className="detection-overlay" aria-label={`${detections.length} detected objects`}>
             {detections.map((detection, index) => (
               <div
@@ -79,25 +72,21 @@ export function DetectionPreview({
           </div>
         )}
 
-        {!hasSource && (
-          <div className="frame-corner corner-tl" />
-        )}
-        {!hasSource && (
-          <>
-            <div className="frame-corner corner-tr" />
-            <div className="frame-corner corner-bl" />
-            <div className="frame-corner corner-br" />
-          </>
-        )}
+        {!hasImage && <div className="frame-corner corner-tl" />}
+        {!hasImage && <>
+          <div className="frame-corner corner-tr" />
+          <div className="frame-corner corner-bl" />
+          <div className="frame-corner corner-br" />
+        </>}
 
-        {loading && hasSource && (
-          <div className="analysis-sweep" aria-hidden="true"><ScanLine size={19} /> Analyzing frame</div>
+        {loading && hasImage && (
+          <div className="analysis-sweep" aria-live="polite"><ScanLine size={19} /> Reading your image in depth</div>
         )}
       </div>
-      {hasSource && (
+      {hasImage && (
         <div className="preview-caption">
-          <span><i className="caption-dot" /> {cameraActive ? "LIVE FEED" : "IMAGE SOURCE"}</span>
-          <span>{cameraActive ? "LOCAL CAMERA" : imageName}</span>
+          <span><i className="caption-dot" /> SENT TO OPENAI FOR ANALYSIS</span>
+          <span>{imageName}</span>
         </div>
       )}
     </div>

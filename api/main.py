@@ -1,4 +1,4 @@
-"""FastAPI endpoints for the Vision Studio detector."""
+"""Image-only OpenAI Vision API for the Sightline web app."""
 
 from __future__ import annotations
 
@@ -8,33 +8,30 @@ import io
 import json
 import os
 import urllib.error
-import urllib.parse
 import urllib.request
-from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image, ImageOps, UnidentifiedImageError
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-load_dotenv(Path(__file__).with_name(".env"), override=False)
-
-from api.detector import (  # noqa: E402
-    MODEL_NAME,
-    model_status,
-    predict,
-    start_model_loading,
-    world_model_status,
-)
+ENV_FILE = Path(__file__).with_name(".env")
+load_dotenv(ENV_FILE, override=True)
 
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 MAX_IMAGE_PIXELS = 50_000_000
 ALLOWED_CONTENT_TYPES = {"image/jpeg", "image/png", "image/webp"}
-GOOGLE_VISION_API_KEY = os.getenv("GOOGLE_CLOUD_VISION_API_KEY", "").strip()
-GOOGLE_VISION_URL = "https://vision.googleapis.com/v1/images:annotate"
+OPENAI_VISION_MODEL = os.getenv("OPENAI_VISION_MODEL", "gpt-6-luna").strip() or "gpt-6-luna"
+OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
+
+
+def _get_openai_api_key() -> str:
+    """Reload the API-side env file so a saved key takes effect without a restart."""
+    load_dotenv(ENV_FILE, override=True)
+    return os.getenv("OPENAI_API_KEY", "").strip()
 
 
 class ImageSize(BaseModel):
@@ -53,20 +50,24 @@ class Detection(BaseModel):
     className: str
     confidence: float
     box: BoundingBox
+    description: str = ""
+    attributes: list[str] = Field(default_factory=list)
+
+
+class SceneAnalysis(BaseModel):
+    overview: str = ""
+    setting: str = ""
+    visibleText: list[str] = Field(default_factory=list)
+    notableDetails: list[str] = Field(default_factory=list)
 
 
 class DetectionResponse(BaseModel):
     image: ImageSize
     detections: list[Detection]
+    analysis: SceneAnalysis
 
 
-@asynccontextmanager
-async def lifespan(_: FastAPI):
-    start_model_loading()
-    yield
-
-
-app = FastAPI(title="Vision Studio Detector API", version="1.1.0", lifespan=lifespan)
+app = FastAPI(title="Sightline OpenAI Vision API", version="2.0.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
@@ -76,97 +77,201 @@ app.add_middleware(
 )
 
 
-def _localize_with_google(contents: bytes, image_size: tuple[int, int], confidence: float) -> list[dict[str, object]]:
-    """Use Google Cloud Vision Object Localization, keeping the API key server-side."""
-    query = urllib.parse.urlencode({"key": GOOGLE_VISION_API_KEY})
+def _text_list(value: object, limit: int = 10, item_length: int = 300) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip()[:item_length] for item in value[:limit] if str(item).strip()]
+
+
+def _analyze_with_openai(
+    contents: bytes,
+    content_type: str,
+    image_size: tuple[int, int],
+    focus: str,
+    api_key: str,
+) -> tuple[list[dict[str, object]], dict[str, object]]:
+    """Return detailed scene notes and approximate object boxes for one image."""
+    focus_instruction = f"Give extra attention to: {focus.strip()}. " if focus.strip() else ""
+    instructions = (
+        "Analyze this single image carefully and return a useful, detailed visual report. "
+        "Describe only what is visible. Do not guess hidden facts, identities, exact materials, or intent; "
+        "mark uncertain interpretations as uncertain. Identify distinct physical objects, including objects "
+        "outside common benchmark categories, while avoiding duplicate boxes for the same object. "
+        "For every object, provide a concise but informative description of visible appearance, position, "
+        "condition, and any clear relationship to nearby objects. Include a scene overview, a cautious "
+        "setting description, readable text exactly as seen, and a few notable visual details. "
+        f"{focus_instruction}For each object, provide a tight approximate box. Coordinates x1, y1, x2, y2 "
+        "must be numbers from 0 to 1000 measured across the full image from its top-left to bottom-right. "
+        "Confidence is an estimate from 0 to 1, not a calibrated measurement. Return an empty objects list "
+        "when no physical object can be identified."
+    )
+    schema = {
+        "type": "object",
+        "properties": {
+            "overview": {"type": "string"},
+            "setting": {"type": "string"},
+            "visibleText": {"type": "array", "items": {"type": "string"}},
+            "notableDetails": {"type": "array", "items": {"type": "string"}},
+            "objects": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "label": {"type": "string"},
+                        "description": {"type": "string"},
+                        "attributes": {"type": "array", "items": {"type": "string"}},
+                        "confidence": {"type": "number"},
+                        "x1": {"type": "number"},
+                        "y1": {"type": "number"},
+                        "x2": {"type": "number"},
+                        "y2": {"type": "number"},
+                    },
+                    "required": ["label", "description", "attributes", "confidence", "x1", "y1", "x2", "y2"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        "required": ["overview", "setting", "visibleText", "notableDetails", "objects"],
+        "additionalProperties": False,
+    }
+
     payload = {
-        "requests": [
+        "model": OPENAI_VISION_MODEL,
+        "store": False,
+        "reasoning": {"effort": "medium"},
+        "instructions": instructions,
+        "input": [
             {
-                "image": {"content": base64.b64encode(contents).decode("ascii")},
-                "features": [{"type": "OBJECT_LOCALIZATION", "maxResults": 100}],
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": "Return a deep visual analysis and approximate boxes for this image."},
+                    {
+                        "type": "input_image",
+                        "image_url": f"data:{content_type};base64,{base64.b64encode(contents).decode('ascii')}",
+                        "detail": "high",
+                    },
+                ],
             }
-        ]
+        ],
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": "deep_image_analysis",
+                "strict": True,
+                "schema": schema,
+            }
+        },
+        "max_output_tokens": 3500,
     }
     request = urllib.request.Request(
-        f"{GOOGLE_VISION_URL}?{query}",
+        OPENAI_RESPONSES_URL,
         data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json; charset=utf-8"},
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=45) as response:
+        with urllib.request.urlopen(request, timeout=90) as response:
             body = json.loads(response.read())
     except urllib.error.HTTPError as error:
-        raise HTTPException(
-            status_code=502,
-            detail=f"Google Cloud Vision returned HTTP {error.code}. Check the API key, billing, and Vision API access.",
-        ) from error
+        try:
+            error_body = json.loads(error.read())
+            message = error_body.get("error", {}).get("message", "")
+        except (json.JSONDecodeError, OSError):
+            message = ""
+        if error.code in (401, 403):
+            detail = "OpenAI rejected the API key. Check OPENAI_API_KEY in api/.env."
+        elif error.code == 429:
+            detail = "OpenAI rate limit or API billing limit reached. Check your API project and try again."
+        else:
+            detail = f"OpenAI Vision returned HTTP {error.code}. {message[:220]}".strip()
+        raise HTTPException(status_code=502, detail=detail) from error
     except (urllib.error.URLError, TimeoutError) as error:
-        raise HTTPException(status_code=502, detail="Could not reach Google Cloud Vision. Check your internet connection and try again.") from error
+        raise HTTPException(status_code=502, detail="OpenAI Vision timed out or could not be reached. Try a smaller image or check your internet connection.") from error
     except (json.JSONDecodeError, OSError) as error:
-        raise HTTPException(status_code=502, detail="Google Cloud Vision returned an unreadable response.") from error
+        raise HTTPException(status_code=502, detail="OpenAI Vision returned an unreadable response.") from error
 
-    annotation = body.get("responses", [{}])[0]
-    remote_error = annotation.get("error")
-    if remote_error:
-        message = remote_error.get("message", "The Google Vision request failed.")
-        raise HTTPException(status_code=502, detail=f"Google Cloud Vision: {message[:240]}")
+    output_text = body.get("output_text")
+    if not isinstance(output_text, str):
+        chunks = [
+            part.get("text", "")
+            for item in body.get("output", [])
+            if item.get("type") == "message"
+            for part in item.get("content", [])
+            if part.get("type") == "output_text"
+        ]
+        output_text = "".join(chunks)
+    if not output_text:
+        raise HTTPException(status_code=502, detail="OpenAI Vision did not return an image analysis. Try a different image.")
+    try:
+        result = json.loads(output_text)
+        raw_objects = result.get("objects", [])
+    except (json.JSONDecodeError, AttributeError) as error:
+        raise HTTPException(status_code=502, detail="OpenAI Vision returned an invalid analysis result.") from error
+    if not isinstance(raw_objects, list):
+        raise HTTPException(status_code=502, detail="OpenAI Vision returned an invalid object list.")
 
     image_width, image_height = image_size
     detections: list[dict[str, object]] = []
-    for item in annotation.get("localizedObjectAnnotations", []):
-        score = float(item.get("score", 0))
-        if score < confidence:
+    for item in raw_objects[:60]:
+        if not isinstance(item, dict):
             continue
-        vertices = item.get("boundingPoly", {}).get("normalizedVertices", [])
-        if not vertices:
+        try:
+            score = max(0.0, min(1.0, float(item["confidence"])))
+            x1 = max(0.0, min(1.0, float(item["x1"]) / 1000))
+            y1 = max(0.0, min(1.0, float(item["y1"]) / 1000))
+            x2 = max(0.0, min(1.0, float(item["x2"]) / 1000))
+            y2 = max(0.0, min(1.0, float(item["y2"]) / 1000))
+            label = str(item["label"]).strip()[:100]
+            description = str(item["description"]).strip()[:600]
+        except (KeyError, TypeError, ValueError):
             continue
-        xs = [float(vertex.get("x", 0)) for vertex in vertices]
-        ys = [float(vertex.get("y", 0)) for vertex in vertices]
-        x1 = max(0.0, min(1.0, min(xs)))
-        y1 = max(0.0, min(1.0, min(ys)))
-        x2 = max(x1, min(1.0, max(xs)))
-        y2 = max(y1, min(1.0, max(ys)))
+        if not label or x2 <= x1 or y2 <= y1:
+            continue
         detections.append(
             {
-                "className": str(item.get("name", "object")),
+                "className": label,
                 "confidence": score,
                 "box": {"x": x1, "y": y1, "width": x2 - x1, "height": y2 - y1},
+                "description": description,
+                "attributes": _text_list(item.get("attributes"), limit=6, item_length=80),
             }
         )
-    return detections
+
+    raw_analysis = result.get("analysis", {})
+    if not isinstance(raw_analysis, dict):
+        raw_analysis = {}
+    analysis = {
+        "overview": str(raw_analysis.get("overview", "")).strip()[:1200],
+        "setting": str(raw_analysis.get("setting", "")).strip()[:500],
+        "visibleText": _text_list(raw_analysis.get("visibleText"), limit=20, item_length=250),
+        "notableDetails": _text_list(raw_analysis.get("notableDetails"), limit=12, item_length=300),
+    }
+    return detections, analysis
 
 
 @app.get("/api/health")
 async def health() -> dict[str, object]:
-    state, error = model_status()
-    world_state, world_error = world_model_status()
-    if state != "ready":
-        detail = "The local detection model is still loading." if state == "loading" else "The local detection model could not be loaded."
-        if error:
-            detail = f"{detail} {error[:240]}"
-        raise HTTPException(
-            status_code=503,
-            detail={"status": state, "message": detail, "worldStatus": world_state, "googleConfigured": bool(GOOGLE_VISION_API_KEY)},
-        )
-    response: dict[str, object] = {
-        "status": "ready",
-        "model": MODEL_NAME.removesuffix(".pt"),
-        "worldStatus": world_state,
-        "googleConfigured": bool(GOOGLE_VISION_API_KEY),
+    configured = bool(_get_openai_api_key())
+    return {
+        "status": "ready" if configured else "error",
+        "model": OPENAI_VISION_MODEL,
+        "message": "API key is configured; it will be checked when an image is analyzed." if configured else "Add OPENAI_API_KEY to api/.env and save the file.",
+        "openaiConfigured": configured,
     }
-    if world_error:
-        response["worldMessage"] = f"The open-vocabulary model could not be loaded. {world_error[:220]}"
-    return response
 
 
 @app.post("/api/detect", response_model=DetectionResponse)
-async def detect(
+async def analyze_image(
     request: Request,
-    confidence: Annotated[float, Query(ge=0.05, le=0.95)] = 0.25,
-    provider: Literal["local", "world", "google"] = "local",
     prompt: Annotated[str, Query(max_length=1000)] = "",
 ) -> DetectionResponse:
+    api_key = _get_openai_api_key()
+    if not api_key:
+        raise HTTPException(status_code=503, detail="OpenAI Vision is not configured. Add OPENAI_API_KEY to api/.env and save the file.")
+
     content_type = request.headers.get("content-type", "").split(";", maxsplit=1)[0].lower()
     if content_type not in ALLOWED_CONTENT_TYPES:
         raise HTTPException(status_code=415, detail="Send a JPEG, PNG, or WebP image.")
@@ -194,46 +299,23 @@ async def detect(
         with Image.open(io.BytesIO(contents)) as opened:
             opened.verify()
         with Image.open(io.BytesIO(contents)) as opened:
-            oriented = ImageOps.exif_transpose(opened)
-            if oriented.width * oriented.height > MAX_IMAGE_PIXELS:
+            image = ImageOps.exif_transpose(opened)
+            if image.width * image.height > MAX_IMAGE_PIXELS:
                 raise HTTPException(status_code=413, detail="Image dimensions are too large to process safely.")
-            image = oriented.convert("RGB")
+            image_size = image.size
     except (UnidentifiedImageError, Image.DecompressionBombError, OSError, ValueError) as error:
         raise HTTPException(status_code=400, detail="This file is not a valid image.") from error
 
-    if provider == "google":
-        if not GOOGLE_VISION_API_KEY:
-            raise HTTPException(status_code=503, detail="Google Cloud Vision is not configured. Add GOOGLE_CLOUD_VISION_API_KEY to api/.env and restart the API.")
-        detections = await asyncio.to_thread(_localize_with_google, contents, image.size, confidence)
-    else:
-        if provider == "world":
-            world_state, world_error = world_model_status()
-            if world_state != "ready":
-                detail = "The open-vocabulary model is still loading. Try again shortly." if world_state == "loading" else "The open-vocabulary model is unavailable. Check the API log for the model download error."
-                if world_error:
-                    detail = f"{detail} {world_error[:200]}"
-                raise HTTPException(status_code=503, detail=detail)
-            classes = [entry.strip() for entry in prompt.split(",") if entry.strip()]
-            if not classes:
-                raise HTTPException(status_code=422, detail="Enter comma-separated object names to search for.")
-            if len(classes) > 30 or any(len(entry) > 80 for entry in classes):
-                raise HTTPException(status_code=422, detail="Use up to 30 object names, each no longer than 80 characters.")
-            prompt = ",".join(dict.fromkeys(entry.casefold() for entry in classes))
-            classes = prompt.split(",")
-        else:
-            classes = None
-
-        state, _ = model_status()
-        if state != "ready":
-            raise HTTPException(status_code=503, detail="The local detection model is still starting. Try again shortly.")
-
-        try:
-            detections = await asyncio.to_thread(predict, image, confidence, provider, classes)
-        except Exception as error:
-            raise HTTPException(status_code=500, detail="Detection failed. Check the detector log and try this image again.") from error
-
-    width, height = image.size
+    detections, analysis = await asyncio.to_thread(
+        _analyze_with_openai,
+        contents,
+        content_type,
+        image_size,
+        prompt,
+        api_key,
+    )
     return DetectionResponse(
-        image=ImageSize(width=width, height=height),
+        image=ImageSize(width=image_size[0], height=image_size[1]),
         detections=[Detection(**item) for item in detections],
+        analysis=SceneAnalysis(**analysis),
     )

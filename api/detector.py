@@ -1,76 +1,79 @@
-"""In-memory local and open-vocabulary YOLO models."""
+"""Fast, local YOLO detector with model loading isolated from the API startup."""
 
 from __future__ import annotations
 
 import os
 import threading
+from pathlib import Path
 from typing import Any
 
 from PIL import Image
-from ultralytics import YOLO, YOLOWorld
 
-MODEL_NAME = os.getenv("VISION_MODEL", "yolo26n.pt")
-WORLD_MODEL_NAME = os.getenv("VISION_WORLD_MODEL", "yolov8s-worldv2.pt")
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+MODEL_SETTING = os.getenv("VISION_MODEL", "yolo26n.pt")
+MODEL_PATH = Path(MODEL_SETTING)
+if not MODEL_PATH.is_absolute():
+    MODEL_PATH = PROJECT_ROOT / MODEL_PATH
+MODEL_PATH = MODEL_PATH.resolve()
+MODEL_NAME = MODEL_PATH.stem
 
 _state_lock = threading.Lock()
 _inference_lock = threading.Lock()
-_model: YOLO | None = None
-_world_model: YOLOWorld | None = None
+_model: Any | None = None
 _state = "loading"
-_world_state = "loading"
 _load_error: str | None = None
-_world_load_error: str | None = None
 _loader_started = False
-_world_classes: tuple[str, ...] = ()
 
 
 def _load() -> None:
     global _model, _state, _load_error
     try:
-        model = YOLO(MODEL_NAME, verbose=False)
+        if not MODEL_PATH.is_file():
+            raise FileNotFoundError(f"Detector weights were not found at {MODEL_PATH}.")
+
+        # Import PyTorch and Ultralytics in the background too. Importing them at
+        # module load blocks health checks and makes the web app appear frozen.
+        cpu_threads = max(1, min(4, os.cpu_count() or 1))
+        os.environ.setdefault("OMP_NUM_THREADS", str(cpu_threads))
+        os.environ.setdefault("MKL_NUM_THREADS", str(cpu_threads))
+        import torch
+
+        torch.set_num_threads(cpu_threads)
+        try:
+            torch.set_num_interop_threads(1)
+        except RuntimeError:
+            # Another library may have initialized the inter-op pool already.
+            pass
+        from ultralytics import YOLO
+
+        model = YOLO(str(MODEL_PATH), verbose=False)
+        # Pay the one-time PyTorch backend startup cost here. The first real
+        # camera frame should use the warmed model instead of appearing stuck.
+        warmup_image = Image.new("RGB", (640, 640), color=(114, 114, 114))
+        model.predict(source=warmup_image, conf=0.25, imgsz=640, verbose=False)
         with _state_lock:
             _model = model
             _state = "ready"
             _load_error = None
-    except Exception as error:  # Keep the API alive so health can report a useful state.
+    except Exception as error:  # Keep the API alive so health can explain a bad install.
         with _state_lock:
             _state = "error"
             _load_error = str(error)
 
 
-def _load_world() -> None:
-    global _world_model, _world_state, _world_load_error
-    try:
-        model = YOLOWorld(WORLD_MODEL_NAME, verbose=False)
-        with _state_lock:
-            _world_model = model
-            _world_state = "ready"
-            _world_load_error = None
-    except Exception as error:  # Keep the local model usable if this larger model fails.
-        with _state_lock:
-            _world_state = "error"
-            _world_load_error = str(error)
-
-
 def start_model_loading() -> None:
-    """Load both model weights in the background so health stays responsive."""
+    """Start only the small detector, without blocking API startup."""
     global _loader_started
     with _state_lock:
         if _loader_started:
             return
         _loader_started = True
         threading.Thread(target=_load, name="vision-model-loader", daemon=True).start()
-        threading.Thread(target=_load_world, name="vision-world-model-loader", daemon=True).start()
 
 
 def model_status() -> tuple[str, str | None]:
     with _state_lock:
         return _state, _load_error
-
-
-def world_model_status() -> tuple[str, str | None]:
-    with _state_lock:
-        return _world_state, _world_load_error
 
 
 def _coordinates_to_detection(
@@ -102,33 +105,19 @@ def _coordinates_to_detection(
     return detections
 
 
-def predict(
-    image: Image.Image,
-    confidence: float,
-    provider: str = "local",
-    prompt: list[str] | None = None,
-) -> list[dict[str, Any]]:
-    """Run one prediction and return image-relative boxes in the 0–1 range."""
-    global _world_classes
-
+def predict(image: Image.Image, confidence: float) -> list[dict[str, Any]]:
+    """Run one local prediction and return image-relative boxes in the 0–1 range."""
     with _state_lock:
-        model: YOLO | YOLOWorld | None = _world_model if provider == "world" else _model
-        state = _world_state if provider == "world" else _state
-        error = _world_load_error if provider == "world" else _load_error
+        model = _model
+        state = _state
+        error = _load_error
     if model is None:
-        detail = error[:240] if error else "The detection model is still loading."
+        detail = error[:240] if error else f"The local detector is {state}."
         raise RuntimeError(detail)
 
     width, height = image.size
     with _inference_lock:
-        if provider == "world":
-            classes = tuple(prompt or ())
-            if not classes:
-                raise ValueError("Enter one or more object names for open-vocabulary detection.")
-            if classes != _world_classes:
-                model.set_classes(list(classes))
-                _world_classes = classes
-        result = model.predict(source=image, conf=confidence, verbose=False)[0]
+        result = model.predict(source=image, conf=confidence, imgsz=640, verbose=False)[0]
 
     if result.boxes is None:
         return []
