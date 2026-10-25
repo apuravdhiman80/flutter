@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: sightline-yolo-api
+    runtime: docker
+    rootDir: backend
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    healthCheckPath: /api/health
+    envVars:
+      - key: MODEL_NAME
+        value: yolo26n.pt
+      - key: FRONTEND_ORIGINS
+        sync: false
