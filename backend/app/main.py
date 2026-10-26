@@ -11,7 +11,7 @@ from typing import Any
 import cv2
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, ImageOps, UnidentifiedImageError
 from ultralytics import YOLO
 
 
@@ -69,9 +69,6 @@ def _decode_image(payload: bytes) -> tuple[Image.Image, int, int]:
                     status_code=415,
                     detail="Use a JPEG, PNG, or WebP image.",
                 )
-            source.verify()
-
-        with Image.open(io.BytesIO(payload)) as source:
             width, height = source.size
             if width < 1 or height < 1:
                 raise HTTPException(status_code=400, detail="This image has invalid dimensions.")
@@ -80,7 +77,17 @@ def _decode_image(payload: bytes) -> tuple[Image.Image, int, int]:
                     status_code=413,
                     detail="This image is too large to process. Try one with fewer pixels.",
                 )
-            return source.convert("RGB"), width, height
+            source.verify()
+
+        with Image.open(io.BytesIO(payload)) as source:
+            image = ImageOps.exif_transpose(source).convert("RGB")
+            width, height = image.size
+            if width * height > MAX_IMAGE_PIXELS:
+                raise HTTPException(
+                    status_code=413,
+                    detail="This image is too large to process. Try one with fewer pixels.",
+                )
+            return image, width, height
     except HTTPException:
         raise
     except (UnidentifiedImageError, Image.DecompressionBombError, OSError, ValueError) as error:

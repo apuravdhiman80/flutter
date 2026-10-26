@@ -17,7 +17,7 @@ The browser sends the selected image directly to the Python API. Deploy the repo
 
 ## Run locally
 
-Use Node.js 20.9 or newer and Python 3.12.
+Use Node.js 20.9 or newer and Python 3.12 or 3.13.
 
 ### 1. Start the Python API
 
@@ -25,11 +25,13 @@ In PowerShell:
 
 ```powershell
 cd backend
-py -3.12 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install -r requirements.txt
-Copy-Item .env.example .env
-uvicorn app.main:app --reload --env-file .env --port 8000
+python --version
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install --upgrade pip
+.\.venv\Scripts\python.exe -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+if (-not (Test-Path .env)) { Copy-Item .env.example .env }
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --reload --env-file .env --port 8000
 ```
 
 The first start downloads the `yolo26n.pt` weights if they are not already present. The API listens at `http://127.0.0.1:8000`; its interactive API documentation is at `http://127.0.0.1:8000/docs`.
@@ -39,7 +41,7 @@ The first start downloads the `yolo26n.pt` weights if they are not already prese
 Open a second PowerShell window at the repository root:
 
 ```powershell
-Copy-Item .env.example .env.local
+if (-not (Test-Path .env.local)) { Copy-Item .env.example .env.local }
 npm install
 npm run dev
 ```
@@ -62,7 +64,7 @@ Open `http://localhost:3000`. The app checks `/api/health` and shows the service
 2. Set `FRONTEND_ORIGINS` to the exact deployed Vercel origin, such as `https://your-app.vercel.app`.
 3. Deploy the `sightline-yolo-api` Docker web service, then copy its public URL into Vercel's `NEXT_PUBLIC_API_URL` setting.
 
-The Blueprint points its Docker build at `backend/Dockerfile`. The service downloads the default model weights when it starts. You can set `MODEL_NAME` to a different Ultralytics model or a custom `.pt` file included in your container image.
+The Blueprint points its Docker build at `backend/Dockerfile`, which installs CPU-only PyTorch for the container. The service downloads the default model weights when it starts. You can set `MODEL_NAME` to a different Ultralytics detection model or a custom `.pt` file included in your container image.
 
 For a different Python host, build and run `backend/Dockerfile` and set `PORT`, `MODEL_NAME`, and `FRONTEND_ORIGINS` in the host's environment settings.
 

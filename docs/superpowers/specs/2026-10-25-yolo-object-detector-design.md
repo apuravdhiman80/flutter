@@ -55,5 +55,6 @@ Deploy the repository root as a Next.js Vercel project. Deploy `backend/` as a D
 
 - Use a light warm-gray and deep-ink visual system with a vivid green accent and crisp, high-contrast detection states.
 - Use inline React components and Lucide icons; avoid a CSS framework and remotely loaded fonts.
+- Package CPU-only PyTorch in the backend container so a CPU deployment doesn't pull CUDA dependencies.
 - Return an annotated JPEG as Base64 in the response to keep the initial deployment stateless.
 - Use a 12 MB file cap and validate the decoded image in the backend.

@@ -48,7 +48,7 @@
 - [ ] Add the Next.js/React/TypeScript configuration and scripts.
 - [ ] Add local environment examples and ignore generated dependencies, caches, and model weights.
 - [ ] Add Vercel frontend defaults and a Docker-based Render service definition rooted at `backend/`.
-- [ ] Add Python runtime dependencies and a production Docker image.
+- [ ] Add Python runtime dependencies and a production Docker image with CPU-only PyTorch.
 - [ ] Verify the configuration is syntactically readable and install frontend dependencies.
 
 ### Task 2: Python YOLO API

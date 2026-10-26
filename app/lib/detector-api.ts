@@ -29,10 +29,6 @@ export interface DetectionResponse {
 
 const API_BASE_URL = (process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000").replace(/\/+$/, "");
 
-export function getApiBaseUrl() {
-  return API_BASE_URL;
-}
-
 export async function checkApiHealth(signal?: AbortSignal): Promise<HealthResponse> {
   const response = await fetch(`${API_BASE_URL}/api/health`, {
     cache: "no-store",

@@ -29,7 +29,6 @@ import { CameraCapture } from "./camera-capture";
 import {
   checkApiHealth,
   detectObjects,
-  getApiBaseUrl,
   type ApiStatus,
   type DetectionResponse,
   type HealthResponse,
@@ -57,6 +56,7 @@ export function Detector() {
   const [isDetecting, setIsDetecting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [cameraOpen, setCameraOpen] = useState(false);
+  const resultIsStale = result !== null && Math.abs(result.confidence_threshold - confidence) > 0.001;
 
   useEffect(() => {
     if (!file) {
@@ -270,7 +270,7 @@ export function Detector() {
           <aside className="controls-panel" aria-labelledby="controls-heading">
             <div className="panel-topline">
               <div className="panel-title"><span className="panel-number panel-number--green">B</span><div><span className="eyebrow">THE ANALYSIS</span><h3 id="controls-heading">Detection setup</h3></div></div>
-              <span className="mini-status"><span /> READY</span>
+              <span className={`mini-status mini-status--${apiStatus}`}><span /> {apiStatus === "online" ? "READY" : apiStatus === "checking" ? "CONNECTING" : "STANDBY"}</span>
             </div>
 
             <div className="model-card">
@@ -335,8 +335,9 @@ export function Detector() {
                     ))}
                   </div>
                 ) : (
-                  <div className="no-detections"><span className="no-detections__icon"><ScanLine size={19} /></span><div><strong>No objects above {Math.round(confidence * 100)}%</strong><p>Try lowering the confidence threshold or using a clearer image.</p></div></div>
+                  <div className="no-detections"><span className="no-detections__icon"><ScanLine size={19} /></span><div><strong>No objects above {Math.round(result.confidence_threshold * 100)}%</strong><p>Try lowering the confidence threshold or using a clearer image.</p></div></div>
                 )}
+                {resultIsStale && <p className="results-stale">Threshold changed · run detection again to refresh these results.</p>}
                 <button className="download-button" type="button" onClick={() => {
                   const link = document.createElement("a");
                   link.href = result.annotated_image;

@@ -12,6 +12,7 @@ WORKDIR /app
 
 COPY requirements.txt ./requirements.txt
 RUN pip install --upgrade pip \
+    && pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu \
     && pip install -r requirements.txt
 
 COPY app ./app
