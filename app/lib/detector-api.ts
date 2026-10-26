@@ -27,10 +27,26 @@ export interface DetectionResponse {
   annotated_image: string;
 }
 
-const API_BASE_URL = (process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000").replace(/\/+$/, "");
+const API_BASE_URL = (
+  process.env.NEXT_PUBLIC_API_URL?.trim() ||
+  (process.env.NODE_ENV === "development" ? "http://127.0.0.1:8000" : "")
+).replace(/\/+$/, "");
+
+export function isApiConfigured() {
+  return API_BASE_URL.length > 0;
+}
+
+function getApiBaseUrl() {
+  if (!API_BASE_URL) {
+    throw new Error(
+      "The detection API URL isn't configured. Set NEXT_PUBLIC_API_URL in Vercel to your Python API's public HTTPS URL, then redeploy.",
+    );
+  }
+  return API_BASE_URL;
+}
 
 export async function checkApiHealth(signal?: AbortSignal): Promise<HealthResponse> {
-  const response = await fetch(`${API_BASE_URL}/api/health`, {
+  const response = await fetch(`${getApiBaseUrl()}/api/health`, {
     cache: "no-store",
     signal,
   });
@@ -49,11 +65,12 @@ export async function detectObjects(
 ): Promise<DetectionResponse> {
   const form = new FormData();
   form.append("file", file);
+  const apiBaseUrl = getApiBaseUrl();
 
   let response: Response;
   try {
     response = await fetch(
-      `${API_BASE_URL}/api/detect?confidence=${encodeURIComponent(confidence.toFixed(2))}`,
+      `${apiBaseUrl}/api/detect?confidence=${encodeURIComponent(confidence.toFixed(2))}`,
       {
         method: "POST",
         body: form,

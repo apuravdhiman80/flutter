@@ -66,8 +66,10 @@ Open `http://localhost:3000`. The app checks `/api/health` and shows the service
 ### Python API on Render
 
 1. Connect this repository to Render and create a Blueprint from its root `render.yaml`.
-2. Set `FRONTEND_ORIGINS` to the exact deployed Vercel origin, such as `https://your-app.vercel.app`. If the Vercel URL is not known yet, deploy the API first and update this setting after the frontend's first deployment.
-3. Deploy the `sightline-yolo-api` Docker web service, then copy its public HTTPS URL into Vercel's `NEXT_PUBLIC_API_URL` setting and redeploy the frontend.
+2. Deploy the `sightline-yolo-api` Docker web service. Render provides a public HTTPS service URL after it finishes building and loading the model.
+3. Check `https://<your-render-service>/api/health`. It must return JSON with `"status":"ready"` before you configure the frontend.
+4. Set the backend's `FRONTEND_ORIGINS` to the exact deployed Vercel origin, such as `https://your-app.vercel.app`, then redeploy the backend.
+5. In Vercel, set `NEXT_PUBLIC_API_URL` to the Render service base URL (no `/api` suffix) for Production and Preview as needed, then redeploy the frontend. This value is embedded at build time.
 
 The Blueprint points its Docker build at `backend/Dockerfile`, which installs CPU-only PyTorch for the container. The service downloads the default model weights when it starts. You can set `MODEL_NAME` to a different Ultralytics detection model or a custom `.pt` file included in your container image.
 

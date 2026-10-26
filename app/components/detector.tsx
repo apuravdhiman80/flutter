@@ -29,6 +29,7 @@ import { CameraCapture } from "./camera-capture";
 import {
   checkApiHealth,
   detectObjects,
+  isApiConfigured,
   type ApiStatus,
   type DetectionResponse,
   type HealthResponse,
@@ -309,7 +310,7 @@ export function Detector() {
             )}
 
             {apiStatus === "offline" && (
-              <div className="api-hint"><Cloud size={15} /><span>Connect the Python API with <code>NEXT_PUBLIC_API_URL</code> to run detection.</span></div>
+              <div className="api-hint"><Cloud size={15} /><span>{isApiConfigured() ? <>The Python API address is set but unreachable. Check that the API is running and that <code>FRONTEND_ORIGINS</code> allows this Vercel site.</> : <>Set <code>NEXT_PUBLIC_API_URL</code> in Vercel to your Python API&apos;s public HTTPS URL, then redeploy.</>}</span></div>
             )}
 
             <button className="button button--detect" type="button" onClick={() => void runDetection()} disabled={!file || isDetecting}>
