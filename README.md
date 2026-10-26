@@ -13,7 +13,7 @@ Sightline is a responsive image object detector with a Next.js interface and a P
 
 ## How it is deployed
 
-The browser sends the selected image directly to the Python API. Deploy the repository root as the Next.js app on Vercel, and deploy `backend/` as a separate web service. This keeps the full Python model runtime and its weights outside the Vercel frontend deployment. The frontend API address and backend CORS origins are configured through environment variables.
+The browser sends the selected image directly to the Python API. Deploy the repository root as the Next.js app on Vercel, and deploy `backend/` as a separate web service. This keeps the full Python model runtime and its weights outside the Vercel frontend deployment. The frontend API address and backend CORS origins are configured through environment variables. The upload goes straight from the browser to the Python API, so it does not pass through a Vercel function upload limit.
 
 ## Run locally
 
@@ -52,17 +52,22 @@ Open `http://localhost:3000`. The app checks `/api/health` and shows the service
 
 ### Frontend on Vercel
 
-1. Import this Git repository in Vercel and keep the project root set to the repository root.
-2. Add `NEXT_PUBLIC_API_URL` with the public base URL for the Python API, for example `https://your-service.onrender.com` (no route suffix needed).
-3. Deploy the project with the Next.js framework preset.
+1. Push this project to a GitHub, GitLab, or Bitbucket repository, then choose **Add New → Project** in Vercel and import that repository. You can also deploy from the project folder with the Vercel CLI (`npx vercel`).
+2. Keep **Root Directory** at the repository root. Vercel detects Next.js from `package.json` and `vercel.json`; leave the framework as **Next.js** and use the detected build settings.
+3. Add the environment variable `NEXT_PUBLIC_API_URL` with the public base URL of the Python API, for example `https://your-service.onrender.com` (no `/api` suffix). Add it for **Production** and **Preview** as needed.
+4. Deploy. If you add or change an environment variable after deployment, redeploy so the new build includes it.
+5. Once Vercel gives you the site URL (for example `https://your-app.vercel.app`), set the backend's `FRONTEND_ORIGINS` to that exact origin, then redeploy the backend. For a Vercel preview URL, add that origin too if you want uploads to work from previews.
+6. Open the Vercel URL. The app should show the API as ready; upload a JPEG, PNG, or WebP image to check detection.
 
 `vercel.json` selects the Next.js framework. The frontend does not package the Python dependencies or model weights.
+
+**Important:** Vercel hosts the Next.js frontend, while the Python API must have its own public HTTPS URL. This app allows images up to 12 MiB and sends them directly to that API. Do not configure the upload to proxy through a Vercel function, whose standard request/response body limit is 4.5 MB. See [Vercel Function limits](https://vercel.com/docs/functions/limitations).
 
 ### Python API on Render
 
 1. Connect this repository to Render and create a Blueprint from its root `render.yaml`.
-2. Set `FRONTEND_ORIGINS` to the exact deployed Vercel origin, such as `https://your-app.vercel.app`.
-3. Deploy the `sightline-yolo-api` Docker web service, then copy its public URL into Vercel's `NEXT_PUBLIC_API_URL` setting.
+2. Set `FRONTEND_ORIGINS` to the exact deployed Vercel origin, such as `https://your-app.vercel.app`. If the Vercel URL is not known yet, deploy the API first and update this setting after the frontend's first deployment.
+3. Deploy the `sightline-yolo-api` Docker web service, then copy its public HTTPS URL into Vercel's `NEXT_PUBLIC_API_URL` setting and redeploy the frontend.
 
 The Blueprint points its Docker build at `backend/Dockerfile`, which installs CPU-only PyTorch for the container. The service downloads the default model weights when it starts. You can set `MODEL_NAME` to a different Ultralytics detection model or a custom `.pt` file included in your container image.
 
