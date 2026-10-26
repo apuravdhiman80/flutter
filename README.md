@@ -65,7 +65,7 @@ Open `http://localhost:3000`. The app checks `/api/health` and shows the service
 
 ### Python API on Render
 
-1. Connect this repository to Render and create a Blueprint from its root `render.yaml`.
+1. Start the [Render Blueprint deployment](https://render.com/deploy?repo=https://github.com/apuravdhiman80/flutter) and connect GitHub if prompted. It reads the root `render.yaml` to create the Docker service.
 2. Deploy the `sightline-yolo-api` Docker web service. Render provides a public HTTPS service URL after it finishes building and loading the model.
 3. Check `https://<your-render-service>/api/health`. It must return JSON with `"status":"ready"` before you configure the frontend.
 4. Set the backend's `FRONTEND_ORIGINS` to the exact deployed Vercel origin, such as `https://your-app.vercel.app`, then redeploy the backend.
