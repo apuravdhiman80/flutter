@@ -16,7 +16,7 @@ from ultralytics import YOLO
 
 
 LOGGER = logging.getLogger("sightline.api")
-MODEL_NAME = os.getenv("MODEL_NAME", "yolo26n.pt")
+MODEL_NAME = os.getenv("MODEL_NAME", "yolov8n-oiv7.pt")
 MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", str(12 * 1024 * 1024)))
 MAX_IMAGE_PIXELS = int(os.getenv("MAX_IMAGE_PIXELS", str(30_000_000)))
 SUPPORTED_FORMATS = {"JPEG", "PNG", "WEBP"}
@@ -128,7 +128,7 @@ def _serialize_detections(result: Any, width: int, height: int) -> list[dict[str
 @app.post("/api/detect")
 async def detect(
     file: UploadFile = File(...),
-    confidence: float = Query(default=0.35, ge=0.1, le=0.9),
+    confidence: float = Query(default=0.2, ge=0.1, le=0.9),
 ) -> dict[str, Any]:
     payload = await file.read(MAX_UPLOAD_BYTES + 1)
     await file.close()

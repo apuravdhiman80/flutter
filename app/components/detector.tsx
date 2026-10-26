@@ -42,7 +42,16 @@ function formatBytes(bytes: number) {
 }
 
 function formatModelName(name: string) {
-  return name.split(/[\\/]/).pop()?.replace(/\.pt$/i, "") || "YOLO26 nano";
+  const modelName = name.split(/[\\/]/).pop()?.replace(/\.pt$/i, "") || "";
+  if (modelName.toLowerCase() === "yolov8n-oiv7") return "YOLOv8n Open Images";
+  return modelName || "YOLO26 nano";
+}
+
+function getModelTag(name: string) {
+  const modelName = name.split(/[\\/]/).pop()?.replace(/\.pt$/i, "").toLowerCase();
+  if (modelName === "yolov8n-oiv7") return "601 CLASSES";
+  if (modelName === "yolo26n") return "COCO";
+  return "CUSTOM";
 }
 
 export function Detector() {
@@ -50,7 +59,7 @@ export function Detector() {
   const [file, setFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
-  const [confidence, setConfidence] = useState(0.35);
+  const [confidence, setConfidence] = useState(0.2);
   const [apiStatus, setApiStatus] = useState<ApiStatus>("checking");
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [result, setResult] = useState<DetectionResponse | null>(null);
@@ -143,7 +152,7 @@ export function Detector() {
     setErrorMessage(null);
   }
 
-  const activeModel = health?.model || result?.model || "yolo26n.pt";
+  const activeModel = health?.model || result?.model || "yolov8n-oiv7.pt";
   const rangeStyle = { "--range-progress": `${((confidence - 0.1) / 0.8) * 100}%` } as CSSProperties;
 
   return (
@@ -277,9 +286,9 @@ export function Detector() {
             <div className="model-card">
               <div className="model-card__icon"><Boxes size={19} strokeWidth={1.7} /></div>
               <div className="model-card__copy"><span>ACTIVE MODEL</span><strong>{formatModelName(activeModel)}</strong></div>
-              <span className="model-card__tag">{formatModelName(activeModel).toLowerCase() === "yolo26n" ? "COCO" : "CUSTOM"}</span>
+              <span className="model-card__tag">{getModelTag(activeModel)}</span>
             </div>
-            <p className="model-description">A fast, pretrained model for everyday objects—people, vehicles, animals, and more.</p>
+            <p className="model-description">A lightweight model trained on 601 everyday categories, including pens and many household objects.</p>
 
             <div className="control-divider" />
 

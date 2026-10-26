@@ -34,7 +34,7 @@ if (-not (Test-Path .env)) { Copy-Item .env.example .env }
 .\.venv\Scripts\python.exe -m uvicorn app.main:app --reload --env-file .env --port 8000
 ```
 
-The first start downloads the `yolo26n.pt` weights if they are not already present. The API listens at `http://127.0.0.1:8000`; its interactive API documentation is at `http://127.0.0.1:8000/docs`.
+The first start downloads the `yolov8n-oiv7.pt` weights if they are not already present. This nano model recognizes 601 categories, including Pen. The local app starts at a 20% confidence threshold so small or less-certain objects like pens are shown; raise it if you see false detections. The API listens at `http://127.0.0.1:8000`; its interactive API documentation is at `http://127.0.0.1:8000/docs`.
 
 ### 2. Start the Next.js app
 
@@ -80,7 +80,7 @@ For a different Python host, build and run `backend/Dockerfile` and set `PORT`, 
 | Variable | Used by | Default | Description |
 | --- | --- | --- | --- |
 | `NEXT_PUBLIC_API_URL` | Next.js browser app | `http://127.0.0.1:8000` | Public base URL for the FastAPI service. |
-| `MODEL_NAME` | Python API | `yolo26n.pt` | Ultralytics model name or path to model weights. |
+| `MODEL_NAME` | Python API | `yolov8n-oiv7.pt` locally | Ultralytics model name or path to model weights. |
 | `FRONTEND_ORIGINS` | Python API | `http://localhost:3000,http://127.0.0.1:3000` | Comma-separated browser origins allowed by CORS. |
 | `MAX_UPLOAD_BYTES` | Python API | `12582912` | Maximum image request size in bytes (12 MiB). |
 | `MAX_IMAGE_PIXELS` | Python API | `30000000` | Maximum decoded image pixel count. |
@@ -92,7 +92,7 @@ For a different Python host, build and run `backend/Dockerfile` and set `PORT`, 
 Returns model readiness and the configured model name:
 
 ```json
-{ "status": "ready", "model": "yolo26n.pt" }
+{ "status": "ready", "model": "yolov8n-oiv7.pt" }
 ```
 
 ### `POST /api/detect?confidence=0.35`
@@ -102,5 +102,5 @@ Send one `multipart/form-data` field named `file`. The confidence threshold must
 ## Notes
 
 - Camera capture requires browser permission and a secure context. `localhost` is allowed during development; deployed sites must use HTTPS.
-- The default model is pretrained for common COCO object categories. To recognize a specific set of objects, configure compatible custom model weights.
+- The local default uses Ultralytics YOLOv8 nano pretrained on Open Images V7, which includes 601 categories such as Pen. The Render Blueprint still explicitly selects the COCO `yolo26n.pt` model. To recognize other specific objects, configure compatible custom model weights.
 - Ultralytics code and pretrained YOLO weights are covered by the [AGPL-3.0 license](https://www.ultralytics.com/license) by default. Review the current license terms for your use; proprietary or commercial deployments may require an Enterprise license.
