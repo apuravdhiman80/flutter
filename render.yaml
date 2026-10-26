@@ -2,6 +2,7 @@ services:
   - type: web
     name: sightline-yolo-api
     runtime: docker
+    plan: free
     rootDir: backend
     dockerfilePath: ./Dockerfile
     dockerContext: .
